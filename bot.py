@@ -444,11 +444,59 @@ async def plans_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(
-        "🦝 <b>Актуальные планы</b>\n\n"
-        "Сейчас здесь появятся актуальные варианты использования Racooon. "
-        "Пока бесплатный режим — до 4 файлов в месяц, каждый продолжительностью до 5 минут.",
+        "🦝 <b>Что там по монеткам?</b>\n\n"
+        "Выбери, сколько работы можно свалить на Енота:\n\n"
+        "<b>🦝 Потестить Енота — 0 ₪</b>\n"
+        "4 файла в месяц · до 5 минут каждый\n\n"
+        "<b>🦝 Енот в кармане — 19 ₪/мес.</b>\n"
+        "20 файлов в месяц · до 15 минут каждый\n\n"
+        "<b>🦝 Енот на связи — 29 ₪/мес.</b>\n"
+        "50 файлов в месяц · до 30 минут каждый\n\n"
+        "<b>🦝 Енот на работе — 42 ₪/мес.</b>\n"
+        "100 файлов в месяц · до 60 минут каждый",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([navigation_row("main_menu")]),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🦝 Потестить Енота · 0 ₪", callback_data="plan:free")],
+                [InlineKeyboardButton("🦝 Енот в кармане · 19 ₪", callback_data="plan:pocket")],
+                [InlineKeyboardButton("🦝 Енот на связи · 29 ₪", callback_data="plan:connected")],
+                [InlineKeyboardButton("🦝 Енот на работе · 42 ₪", callback_data="plan:work")],
+                navigation_row("main_menu"),
+            ]
+        ),
+    )
+
+
+async def plan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    plans = {
+        "free": ("🦝 Потестить Енота", "0 ₪", "4 файла в месяц", "до 5 минут каждый"),
+        "pocket": ("🦝 Енот в кармане", "19 ₪/мес.", "20 файлов в месяц", "до 15 минут каждый"),
+        "connected": ("🦝 Енот на связи", "29 ₪/мес.", "50 файлов в месяц", "до 30 минут каждый"),
+        "work": ("🦝 Енот на работе", "42 ₪/мес.", "100 файлов в месяц", "до 60 минут каждый"),
+    }
+    key = (query.data or "").split(":", 1)[1]
+    plan = plans.get(key)
+    if not plan:
+        return
+
+    name, price, files, duration = plan
+    extra = (
+        "\n\nЭтот план уже активен автоматически."
+        if key == "free"
+        else "\n\nОплату подключаем следующим шагом. Пока Енот покажет тебе план, но деньги не спишет."
+    )
+    await query.message.reply_text(
+        f"<b>{name}</b>\n"
+        f"<b>{price}</b>\n\n"
+        f"{files}\n"
+        f"{duration}{extra}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [navigation_row("plans")]
+        ),
     )
 
 
@@ -1067,6 +1115,10 @@ async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.pop("awaiting_library_search", None)
     context.user_data.pop("awaiting_media_link", None)
 
+    if data == "plans":
+        await plans_callback(update, context)
+        return
+
     if data == "main_menu":
         await query.message.reply_text(
             "🦝 <b>Главное меню</b>\n\n"
@@ -1295,6 +1347,7 @@ def main():
         )
     )
     app.add_handler(CallbackQueryHandler(plans_callback, pattern=r"^plans$"))
+    app.add_handler(CallbackQueryHandler(plan_detail_callback, pattern=r"^plan:(free|pocket|connected|work)$"))
     app.add_handler(
         CallbackQueryHandler(
             navigation_callback,
