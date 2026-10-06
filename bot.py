@@ -64,9 +64,54 @@ def language_keyboard():
     )
 
 
-def current_transcription_language(context: ContextTypes.DEFAULT_TYPE):
-    selected = context.user_data.get("transcription_language", "auto")
-    return TRANSCRIPTION_LANGUAGES.get(selected, TRANSCRIPTION_LANGUAGES["auto"])
+async def current_transcription_language(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+):
+    selected = context.user_data.get("transcription_language")
+    if selected in TRANSCRIPTION_LANGUAGES:
+        return selected, TRANSCRIPTION_LANGUAGES[selected]
+
+    if db_pool is not None:
+        try:
+            saved = await db_pool.fetchval(
+                "SELECT transcription_language FROM user_settings WHERE chat_id = $1",
+                chat_id,
+            )
+            if saved in TRANSCRIPTION_LANGUAGES:
+                context.user_data["transcription_language"] = saved
+                return saved, TRANSCRIPTION_LANGUAGES[saved]
+        except Exception:
+            logger.exception("Loading language preference failed")
+
+    selected = "auto"
+    context.user_data["transcription_language"] = selected
+    return selected, TRANSCRIPTION_LANGUAGES[selected]
+
+
+async def set_transcription_language(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    selected: str,
+):
+    if selected not in TRANSCRIPTION_LANGUAGES:
+        raise ValueError("Unsupported transcription language")
+
+    context.user_data["transcription_language"] = selected
+
+    if db_pool is not None:
+        await db_pool.execute(
+            """
+            INSERT INTO user_settings (chat_id, transcription_language)
+            VALUES ($1, $2)
+            ON CONFLICT (chat_id)
+            DO UPDATE SET
+                transcription_language = EXCLUDED.transcription_language,
+                updated_at = NOW()
+            """,
+            chat_id,
+            selected,
+        )
 
 
 async def init_db(application: Application):
@@ -84,8 +129,21 @@ async def init_db(application: Application):
             item_id BIGINT NOT NULL,
             original TEXT NOT NULL,
             structured TEXT,
+            language_code TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (chat_id, item_id)
+        )
+        """
+    )
+    await db_pool.execute(
+        "ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS language_code TEXT"
+    )
+    await db_pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_settings (
+            chat_id BIGINT PRIMARY KEY,
+            transcription_language TEXT NOT NULL DEFAULT 'auto',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
@@ -99,23 +157,31 @@ async def close_db(application: Application):
         db_pool = None
 
 
-async def save_transcript(chat_id: int, item_id: str, original: str, structured: str):
+async def save_transcript(
+    chat_id: int,
+    item_id: str,
+    original: str,
+    structured: str,
+    language_code: str | None,
+):
     if db_pool is None:
         return
 
     await db_pool.execute(
         """
-        INSERT INTO transcripts (chat_id, item_id, original, structured)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO transcripts (chat_id, item_id, original, structured, language_code)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (chat_id, item_id)
         DO UPDATE SET
             original = EXCLUDED.original,
-            structured = EXCLUDED.structured
+            structured = EXCLUDED.structured,
+            language_code = EXCLUDED.language_code
         """,
         chat_id,
         int(item_id),
         original,
         structured,
+        language_code,
     )
 
 
@@ -125,7 +191,7 @@ async def load_transcript(chat_id: int, item_id: str):
 
     return await db_pool.fetchrow(
         """
-        SELECT original, structured
+        SELECT original, structured, language_code
         FROM transcripts
         WHERE chat_id = $1 AND item_id = $2
         """,
@@ -135,7 +201,7 @@ async def load_transcript(chat_id: int, item_id: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    label, _ = current_transcription_language(context)
+    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
@@ -148,7 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    label, _ = current_transcription_language(context)
+    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
@@ -156,6 +222,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🦝 Пришли голосовое, аудио или видео.\n\n"
         "Я расшифрую его, разложу по смыслу и сохраню оригинальный текст.",
         reply_markup=keyboard,
+    )
+
+
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    selected, (label, _) = await current_transcription_language(
+        context,
+        update.effective_chat.id,
+    )
+    await update.message.reply_text(
+        f"🎙 Сейчас язык аудио: <b>{html.escape(label)}</b>\n\n"
+        "Выбери язык, на котором говорят в записи. "
+        "Это помогает распознаванию и не является переводом.",
+        parse_mode="HTML",
+        reply_markup=language_keyboard(),
     )
 
 
@@ -190,11 +270,27 @@ async def send_long_text(message, text: str, parse_mode=None):
         )
 
 
-async def structure_transcript(transcript: str) -> str:
+async def structure_transcript(transcript: str, language_code: str | None = None) -> str:
+    output_languages = {
+        "ru": "Russian",
+        "en": "English",
+        "he": "Hebrew",
+        "ar": "Arabic",
+        "fa": "Persian",
+    }
+    forced_language = output_languages.get(language_code)
+    language_rule = (
+        f"Write the result strictly in {forced_language}. Do not switch to a related language. "
+        if forced_language
+        else "Write in exactly the language of the transcript. Do not switch to a related language. "
+    )
+
     response = await client.responses.create(
         model=TEXT_MODEL,
         instructions=(
-            "Ты — Racooon. Превращай расшифровку голосового сообщения в очень короткую "
+            language_rule
+            + "Russian and Ukrainian are different languages: never translate or switch between them unless explicitly asked. "
+            + "Ты — Racooon. Превращай расшифровку голосового сообщения в очень короткую "
             "и полезную структуру. Пиши на языке исходной речи; если в записи несколько языков, "
             "сохраняй их как в оригинале и не переводи без запроса пользователя. "
             "Не выдумывай факты, даты, время, имена или задачи. "
@@ -251,11 +347,27 @@ async def translate_text(transcript: str, target_language: str) -> str:
     return (response.output_text or "").strip()
 
 
-async def make_notes(transcript: str) -> str:
+async def make_notes(transcript: str, language_code: str | None = None) -> str:
+    output_languages = {
+        "ru": "Russian",
+        "en": "English",
+        "he": "Hebrew",
+        "ar": "Arabic",
+        "fa": "Persian",
+    }
+    forced_language = output_languages.get(language_code)
+    language_rule = (
+        f"Write the result strictly in {forced_language}. Do not switch to a related language. "
+        if forced_language
+        else "Write in exactly the language of the transcript. Do not switch to a related language. "
+    )
+
     response = await client.responses.create(
         model=TEXT_MODEL,
         instructions=(
-            "Ты — Racooon. Твоя задача — ИЗВЛЕЧЬ заметки только из того, что прямо содержится в расшифровке. "
+            language_rule
+            + "Russian and Ukrainian are different languages: never translate or switch between them unless explicitly asked. "
+            + "Ты — Racooon. Твоя задача — ИЗВЛЕЧЬ заметки только из того, что прямо содержится в расшифровке. "
             "Не дополняй текст здравым смыслом, типичными действиями, советами, предположениями или шаблонными формулировками. "
             "Каждый пункт должен быть прямым фактом, задачей или деталью из исходного текста, только короче и чище. "
             "Если пункт нельзя подтвердить конкретной фразой из расшифровки — не пиши его. "
@@ -306,9 +418,17 @@ def format_structured_text(structured: str) -> str:
     return "\n".join(rendered)
 
 
-def remember_transcript(context: ContextTypes.DEFAULT_TYPE, item_id: str, transcript: str):
+def remember_transcript(
+    context: ContextTypes.DEFAULT_TYPE,
+    item_id: str,
+    transcript: str,
+    language_code: str | None = None,
+):
     items = context.user_data.setdefault("racooon_items", {})
-    items[item_id] = {"transcript": transcript}
+    items[item_id] = {
+        "transcript": transcript,
+        "language_code": language_code,
+    }
 
     # Keep only a small recent in-memory history for the MVP.
     if len(items) > 20:
@@ -355,7 +475,10 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             with local_path.open("rb") as audio_file:
-                _, selected_language = current_transcription_language(context)
+                selected_key, (selected_label, selected_language) = await current_transcription_language(
+                    context,
+                    message.chat_id,
+                )
                 transcription_kwargs = {
                     "model": TRANSCRIPTION_MODEL,
                     "file": audio_file,
@@ -383,15 +506,21 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            structured = await structure_transcript(original)
+            structured = await structure_transcript(original, selected_language)
         except Exception:
             logger.exception("Structuring failed")
             structured = f"→ {original}"
 
         item_id = str(message.message_id)
-        remember_transcript(context, item_id, original)
+        remember_transcript(context, item_id, original, selected_language)
         try:
-            await save_transcript(message.chat_id, item_id, original, structured)
+            await save_transcript(
+                message.chat_id,
+                item_id,
+                original,
+                structured,
+                selected_language,
+            )
         except Exception:
             logger.exception("Persistent save failed")
 
@@ -403,6 +532,12 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [
                     InlineKeyboardButton("Перевести", callback_data=f"translate:{item_id}"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"🎙 Язык аудио: {selected_label}",
+                        callback_data="language_menu",
+                    ),
                 ],
             ]
         )
@@ -452,7 +587,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         selected = item_id
         if selected not in TRANSCRIPTION_LANGUAGES:
             return
-        context.user_data["transcription_language"] = selected
+        await set_transcription_language(
+            context,
+            query.message.chat_id,
+            selected,
+        )
         label, _ = TRANSCRIPTION_LANGUAGES[selected]
         await query.message.reply_text(
             f"🦝 Язык аудио: <b>{html.escape(label)}</b>",
@@ -471,8 +610,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if saved:
             original = saved["original"]
-            remember_transcript(context, item_id, original)
-            item = {"transcript": original}
+            language_code = saved["language_code"]
+            remember_transcript(context, item_id, original, language_code)
+            item = {
+                "transcript": original,
+                "language_code": language_code,
+            }
         else:
             await query.message.reply_text(
                 "🦝 Я не нашёл этот текст. Пришли файл ещё раз."
@@ -480,6 +623,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     original = item["transcript"]
+    item_language_code = item.get("language_code")
 
     if action == "full":
         await send_long_text(
@@ -492,7 +636,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "notes":
         status = await query.message.reply_text("🦝 Енот делает заметки…")
         try:
-            notes = await make_notes(original)
+            notes = await make_notes(original, item_language_code)
             if not notes:
                 notes = original
             await status.edit_text(
@@ -552,7 +696,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    label, _ = current_transcription_language(context)
+    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
@@ -578,6 +722,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(
         MessageHandler(
