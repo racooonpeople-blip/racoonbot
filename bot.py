@@ -395,13 +395,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🦝 Пришли голосовое, аудио или видео — я расшифрую его и разложу по смыслу.\n\n"
-        "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
-        "От выбранного языка напрямую зависит качество распознавания и точность текста.",
+        "🦝 <b>Что умеет Енот</b>\n\n"
+        "🎙 Расшифровывает голосовые и аудио\n"
+        "🎬 Разбирает видео\n"
+        "📝 Делает заметки и выделяет главное\n"
+        "🌍 Переводит готовый текст\n"
+        "📚 Сохраняет записи\n"
+        "🔎 Ищет сохранённое по словам и по смыслу\n\n"
+        "Перед первой записью выбери язык аудио. Если язык неизвестен — используй «Определить автоматически».",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
-        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -955,7 +958,7 @@ async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if data == "main_menu":
         await query.message.reply_text(
             "🦝 <b>Главное меню</b>\n\n"
-            "Пришли голосовое, аудио или видео. "
+            "Пришли голосовое, аудио, видео или ссылку. "
             "Сохранённые материалы лежат в «Мои записи». "
             "Для более точного результата выбери язык аудио заранее.",
             parse_mode="HTML",
@@ -1142,12 +1145,10 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "🦝 Пришли голосовое, аудио или видео.\n\n"
-        "🎙 Для более точного результата выбери язык аудио до отправки записи.",
+        "🦝 Я пока жду материал: голосовое, аудио, видео или ссылку.\n\n"
+        "Если хочешь найти уже сохранённое — открой «Мои записи».",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
-        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 
