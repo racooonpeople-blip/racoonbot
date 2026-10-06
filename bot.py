@@ -1,11 +1,19 @@
+import html
 import logging
 import os
 import tempfile
 from pathlib import Path
 
 from openai import AsyncOpenAI
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -17,6 +25,7 @@ TOKEN = "".join(os.getenv("TELEGRAM_BOT_TOKEN", "").split())
 OPENAI_API_KEY = "".join(os.getenv("OPENAI_API_KEY", "").split())
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "ru")
+TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -30,7 +39,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦝 Racooon is awake.\n\n"
         "Send me a voice message, audio, video, or an audio/video file.\n"
-        "I’ll turn it into text.\n\n"
+        "I’ll turn it into text and sort out what matters.\n\n"
         "/start — start Racooon\n"
         "/help — help"
     )
@@ -38,8 +47,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🦝 Send me a voice message, audio, video, or a supported audio/video file.\n\n"
-        "I’ll transcribe it and send the text back here."
+        "🦝 Пришли голосовое, аудио или видео.\n\n"
+        "Я расшифрую его, разложу по смыслу и сохраню оригинальный текст."
     )
 
 
@@ -65,10 +74,80 @@ def get_media_info(message):
     return None, None
 
 
-async def send_long_text(message, text: str):
+async def send_long_text(message, text: str, parse_mode=None):
     chunk_size = 3900
     for i in range(0, len(text), chunk_size):
-        await message.reply_text(text[i:i + chunk_size])
+        await message.reply_text(
+            text[i:i + chunk_size],
+            parse_mode=parse_mode,
+        )
+
+
+async def structure_transcript(transcript: str) -> str:
+    response = await client.responses.create(
+        model=TEXT_MODEL,
+        instructions=(
+            "Ты — Racooon. Превращай расшифровку голосового сообщения в очень короткую "
+            "и полезную структуру. Пиши на том же языке, что и пользователь. "
+            "Не выдумывай факты, даты, время, имена или задачи. "
+            "Если в речи есть дата или время, начни с них. "
+            "Каждую отдельную задачу или мысль пиши с новой строки через символ →. "
+            "Если одна дата/время относится к нескольким задачам, укажи дату/время только один раз. "
+            "Не добавляй заголовок, вступление, слово 'Оригинал' или пояснения. "
+            "Пример входа: 'Завтра в четыре позвонить Маше, заказать торт и забрать посылку.' "
+            "Пример выхода:\n"
+            "Завтра, 16:00 → позвонить Маше\n"
+            "→ заказать торт\n"
+            "→ забрать посылку"
+        ),
+        input=transcript,
+    )
+    return (response.output_text or "").strip()
+
+
+async def make_notes(transcript: str) -> str:
+    response = await client.responses.create(
+        model=TEXT_MODEL,
+        instructions=(
+            "Сделай краткие, аккуратные заметки по этой расшифровке. "
+            "Пиши на том же языке, что и пользователь. Сохраняй только информацию из исходного текста, "
+            "ничего не выдумывай. Убирай повторы и слова-паразиты. "
+            "Используй короткие пункты с символом •."
+        ),
+        input=transcript,
+    )
+    return (response.output_text or "").strip()
+
+
+def format_structured_text(structured: str) -> str:
+    lines = [line.strip() for line in structured.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    rendered = []
+    first = lines[0]
+    if "→" in first:
+        left, right = first.split("→", 1)
+        rendered.append(
+            f"<b>{html.escape(left.strip())}</b> → {html.escape(right.strip())}"
+        )
+    else:
+        rendered.append(f"<b>{html.escape(first)}</b>")
+
+    for line in lines[1:]:
+        rendered.append(html.escape(line))
+
+    return "\n".join(rendered)
+
+
+def remember_transcript(context: ContextTypes.DEFAULT_TYPE, item_id: str, transcript: str):
+    items = context.user_data.setdefault("racooon_items", {})
+    items[item_id] = {"transcript": transcript}
+
+    # Keep only a small recent in-memory history for the MVP.
+    if len(items) > 20:
+        oldest_key = next(iter(items))
+        items.pop(oldest_key, None)
 
 
 async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,15 +196,35 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     prompt="Русская разговорная речь. Транскрибируй дословно, не переводи.",
                 )
 
-        text = (transcript.text or "").strip()
-        if not text:
+        original = (transcript.text or "").strip()
+        if not original:
             await status.edit_text(
                 "🦝 Я всё прослушал, но не смог уверенно распознать речь."
             )
             return
 
-        await status.edit_text("🦝 Готово. Енот всё разложил.")
-        await send_long_text(message, text)
+        try:
+            structured = await structure_transcript(original)
+        except Exception:
+            logger.exception("Structuring failed")
+            structured = f"→ {original}"
+
+        item_id = str(message.message_id)
+        remember_transcript(context, item_id, original)
+
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Полный текст", callback_data=f"full:{item_id}"),
+                InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
+            ]]
+        )
+
+        body = format_structured_text(structured)
+        await status.edit_text(
+            "🦝 <b>Енот всё разложил.</b>\n\n" + body,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
     except Exception:
         logger.exception("Transcription failed")
@@ -135,9 +234,52 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        action, item_id = query.data.split(":", 1)
+    except ValueError:
+        return
+
+    item = context.user_data.get("racooon_items", {}).get(item_id)
+    if not item:
+        await query.message.reply_text(
+            "🦝 Этот текст уже не лежит у меня под лапой. Пришли файл ещё раз."
+        )
+        return
+
+    original = item["transcript"]
+
+    if action == "full":
+        await send_long_text(
+            query.message,
+            "<b>Оригинал:</b>\n" + html.escape(original),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "notes":
+        status = await query.message.reply_text("🦝 Енот делает заметки…")
+        try:
+            notes = await make_notes(original)
+            if not notes:
+                notes = original
+            await status.edit_text(
+                "📝 <b>Заметки</b>\n\n" + html.escape(notes),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Notes failed")
+            await status.edit_text(
+                "🦝 Не получилось сделать заметки. Попробуй ещё раз чуть позже."
+            )
+
+
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🦝 Пришли мне голосовое, аудио или видео — я превращу его в текст."
+        "🦝 Пришли мне голосовое, аудио или видео — я разберу его."
     )
 
 
@@ -151,6 +293,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(
         MessageHandler(
             filters.VOICE | filters.AUDIO | filters.VIDEO | filters.Document.ALL,
