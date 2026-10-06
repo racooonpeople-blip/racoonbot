@@ -114,6 +114,31 @@ async def structure_transcript(transcript: str) -> str:
     return (response.output_text or "").strip()
 
 
+async def translate_text(transcript: str, target_language: str) -> str:
+    language_names = {
+        "en": "English",
+        "he": "Hebrew",
+        "ru": "Russian",
+        "ar": "Arabic",
+        "fa": "Persian",
+    }
+    target = language_names.get(target_language)
+    if not target:
+        raise ValueError("Unsupported target language")
+
+    response = await client.responses.create(
+        model=TEXT_MODEL,
+        instructions=(
+            f"Translate the user's transcript into {target}. "
+            "Preserve the meaning, names, numbers, dates, times, links, and paragraph structure. "
+            "Do not summarize, explain, add commentary, or omit details. "
+            "Return only the translation."
+        ),
+        input=transcript,
+    )
+    return (response.output_text or "").strip()
+
+
 async def make_notes(transcript: str) -> str:
     response = await client.responses.create(
         model=TEXT_MODEL,
@@ -242,10 +267,15 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remember_transcript(context, item_id, original)
 
         keyboard = InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
-                InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
-            ]]
+            [
+                [
+                    InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
+                    InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
+                ],
+                [
+                    InlineKeyboardButton("Перевести", callback_data=f"translate:{item_id}"),
+                ],
+            ]
         )
 
         body = format_structured_text(structured)
@@ -267,9 +297,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    try:
-        action, item_id = query.data.split(":", 1)
-    except ValueError:
+    parts = query.data.split(":")
+    action = parts[0]
+
+    if action == "tr" and len(parts) == 3:
+        _, target_language, item_id = parts
+    elif len(parts) == 2:
+        action, item_id = parts
+        target_language = None
+    else:
         return
 
     item = context.user_data.get("racooon_items", {}).get(item_id)
@@ -303,6 +339,51 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Notes failed")
             await status.edit_text(
                 "🦝 Не получилось сделать заметки. Попробуй ещё раз чуть позже."
+            )
+        return
+
+    if action == "translate":
+        language_keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("English", callback_data=f"tr:en:{item_id}"),
+                    InlineKeyboardButton("עברית", callback_data=f"tr:he:{item_id}"),
+                ],
+                [
+                    InlineKeyboardButton("Русский", callback_data=f"tr:ru:{item_id}"),
+                    InlineKeyboardButton("العربية", callback_data=f"tr:ar:{item_id}"),
+                    InlineKeyboardButton("فارسی", callback_data=f"tr:fa:{item_id}"),
+                ],
+            ]
+        )
+        await query.message.reply_text(
+            "🌍 Куда перевести?",
+            reply_markup=language_keyboard,
+        )
+        return
+
+    if action == "tr":
+        language_titles = {
+            "en": "English",
+            "he": "עברית",
+            "ru": "Русский",
+            "ar": "العربية",
+            "fa": "فارسی",
+        }
+        title = language_titles.get(target_language, target_language)
+        status = await query.message.reply_text(f"🦝 Перевожу → {title}…")
+        try:
+            translated = await translate_text(original, target_language)
+            if not translated:
+                translated = original
+            await status.edit_text(
+                f"🌍 <b>{html.escape(title)}</b>\n\n" + html.escape(translated),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Translation failed")
+            await status.edit_text(
+                "🦝 Не получилось перевести. Попробуй ещё раз чуть позже."
             )
 
 
