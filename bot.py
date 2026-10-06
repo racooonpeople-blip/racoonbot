@@ -236,6 +236,16 @@ async def init_db(application: Application):
         ADD COLUMN IF NOT EXISTS transcription_language_confirmed BOOLEAN NOT NULL DEFAULT FALSE
         """
     )
+    await db_pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_events (
+            chat_id BIGINT NOT NULL,
+            item_id BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (chat_id, item_id)
+        )
+        """
+    )
     logger.info("Persistent transcript storage is ready")
 
     await application.bot.set_my_commands(
@@ -670,6 +680,35 @@ def remember_transcript(
         items.pop(oldest_key, None)
 
 
+async def monthly_free_usage(chat_id: int) -> int:
+    if db_pool is None:
+        return 0
+    return await db_pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM usage_events
+        WHERE chat_id = $1
+          AND created_at >= date_trunc('month', NOW())
+          AND created_at < date_trunc('month', NOW()) + INTERVAL '1 month'
+        """,
+        chat_id,
+    )
+
+
+async def record_free_usage(chat_id: int, item_id: str):
+    if db_pool is None:
+        return
+    await db_pool.execute(
+        """
+        INSERT INTO usage_events (chat_id, item_id)
+        VALUES ($1, $2)
+        ON CONFLICT (chat_id, item_id) DO NOTHING
+        """,
+        chat_id,
+        int(item_id),
+    )
+
+
 async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
@@ -686,6 +725,20 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(
             "🦝 Пока я умею разбирать аудио и видео. "
             "Для обычных документов модуль появится позже."
+        )
+        return
+
+    try:
+        used_this_month = await monthly_free_usage(message.chat_id)
+    except Exception:
+        logger.exception("Usage check failed")
+        used_this_month = 0
+
+    if used_this_month >= 4:
+        await message.reply_text(
+            "🦝 Бесплатный лимит на этот месяц уже использован: 4 из 4 файлов.\n\n"
+            "Новый бесплатный лимит откроется в следующем календарном месяце.",
+            reply_markup=main_menu_keyboard(),
         )
         return
 
@@ -706,7 +759,27 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    status = await message.reply_text("🦝 Енот уже разбирается…")
+    duration = None
+    if message.voice:
+        duration = message.voice.duration
+    elif message.audio:
+        duration = message.audio.duration
+    elif message.video:
+        duration = message.video.duration
+
+    if duration is not None and duration > 5 * 60:
+        minutes = duration // 60
+        seconds = duration % 60
+        await message.reply_text(
+            f"🦝 Эта запись длится {minutes}:{seconds:02d}. "
+            "В бесплатном режиме можно наенотить файл продолжительностью не более 5 минут.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    status = await message.reply_text(
+        f"🦝 Енот уже разбирается… Бесплатно в этом месяце: {used_this_month + 1}/4"
+    )
 
     try:
         telegram_file = await context.bot.get_file(file_id)
@@ -781,6 +854,11 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             logger.exception("Persistent save failed")
+
+        try:
+            await record_free_usage(message.chat_id, item_id)
+        except Exception:
+            logger.exception("Usage recording failed")
 
         keyboard = result_keyboard(item_id)
 
