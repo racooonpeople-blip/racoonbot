@@ -296,6 +296,39 @@ async def load_recent_transcripts(chat_id: int, limit: int = 8):
     )
 
 
+async def search_transcripts(chat_id: int, search_text: str, limit: int = 8):
+    if db_pool is None:
+        return []
+
+    words = [word.strip() for word in search_text.split() if len(word.strip()) >= 2]
+    if not words:
+        return []
+
+    rows = await db_pool.fetch(
+        """
+        SELECT item_id, original, structured, language_code, created_at
+        FROM transcripts
+        WHERE chat_id = $1
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        chat_id,
+    )
+
+    scored = []
+    for row in rows:
+        haystack = f"{row['original']} {row['structured'] or ''}".casefold()
+        score = sum(haystack.count(word.casefold()) for word in words)
+        if score:
+            scored.append((score, row))
+
+    scored.sort(
+        key=lambda pair: (pair[0], pair[1]["created_at"]),
+        reverse=True,
+    )
+    return [row for _, row in scored[:limit]]
+
+
 def library_item_title(row) -> str:
     source = (row["structured"] or row["original"] or "").strip().replace("\n", " ")
     source = " ".join(source.split())
@@ -369,6 +402,7 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
         for row in rows
     ]
+    buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
     buttons.append(navigation_row("main_menu"))
 
     await update.message.reply_text(
@@ -793,6 +827,7 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
             for row in rows
         ]
+        buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
         buttons.append(navigation_row("main_menu"))
 
         await query.message.reply_text(
@@ -800,6 +835,17 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Последние сохранённые записи:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    if data == "library_search":
+        context.user_data["awaiting_library_search"] = True
+        await query.message.reply_text(
+            "🔎 <b>Что найти?</b>\n\n"
+            "Напиши как помнишь — например: «торт для Маши», «посылка» или «встреча в четверг».\n"
+            "Енот пороется в сохранённых записях. 🦝",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([navigation_row("library")]),
         )
         return
 
@@ -848,6 +894,7 @@ async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     data = query.data or ""
+    context.user_data.pop("awaiting_library_search", None)
 
     if data == "main_menu":
         await query.message.reply_text(
@@ -994,6 +1041,36 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("awaiting_library_search", False):
+        search_text = (update.message.text or "").strip()
+        rows = await search_transcripts(update.effective_chat.id, search_text)
+
+        if not rows:
+            await update.message.reply_text(
+                "🦝 Ничего похожего не нашёл. Попробуй написать другими словами.",
+                reply_markup=InlineKeyboardMarkup(
+                    [
+                        [InlineKeyboardButton("🔎 Искать ещё", callback_data="library_search")],
+                        navigation_row("library"),
+                    ]
+                ),
+            )
+            return
+
+        buttons = [
+            [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
+            for row in rows
+        ]
+        buttons.append([InlineKeyboardButton("🔎 Искать ещё", callback_data="library_search")])
+        buttons.append(navigation_row("library"))
+
+        await update.message.reply_text(
+            f"🦝 <b>Вот что я нашёл по запросу:</b> {html.escape(search_text)}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео.\n\n"
         "🎙 Для более точного результата выбери язык аудио до отправки записи.",
@@ -1025,7 +1102,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             library_callback,
-            pattern=r"^(library|library_item:)",
+            pattern=r"^(library|library_search|library_item:.*)$",
         )
     )
     app.add_handler(
