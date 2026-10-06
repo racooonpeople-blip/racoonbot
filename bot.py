@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 TOKEN = "".join(os.getenv("TELEGRAM_BOT_TOKEN", "").split())
 OPENAI_API_KEY = "".join(os.getenv("OPENAI_API_KEY", "").split())
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
-TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "ru")
+TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "").strip()
 TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -88,8 +88,13 @@ async def structure_transcript(transcript: str) -> str:
         model=TEXT_MODEL,
         instructions=(
             "Ты — Racooon. Превращай расшифровку голосового сообщения в очень короткую "
-            "и полезную структуру. Пиши на том же языке, что и пользователь. "
+            "и полезную структуру. Пиши на языке исходной речи; если в записи несколько языков, "
+            "сохраняй их как в оригинале и не переводи без запроса пользователя. "
             "Не выдумывай факты, даты, время, имена или задачи. "
+            "Сначала определи, есть ли вообще что структурировать. "
+            "Если это короткая фраза, приветствие, вопрос, комментарий или сообщение без задач/сроков/фактов, "
+            "верни только аккуратно очищенный смысл исходной фразы без рубрик, без советов и без фраз "
+            "вроде 'необходимо уточнить', 'недостаточно информации' или 'нужно составить структуру'. "
             "Сначала пойми смысл временных связей, и только потом сокращай. "
             "Не привязывай время автоматически к ближайшему глаголу. Различай: "
             "(1) когда выполнить действие, (2) дедлайн/к какому моменту результат должен быть готов, "
@@ -243,11 +248,19 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             with local_path.open("rb") as audio_file:
+                transcription_kwargs = {
+                    "model": TRANSCRIPTION_MODEL,
+                    "file": audio_file,
+                    "prompt": (
+                        "Transcribe exactly in the language or languages spoken. "
+                        "Do not translate. Preserve names, numbers, dates, times, and code-switching."
+                    ),
+                }
+                if TRANSCRIPTION_LANGUAGE:
+                    transcription_kwargs["language"] = TRANSCRIPTION_LANGUAGE
+
                 transcript = await client.audio.transcriptions.create(
-                    model=TRANSCRIPTION_MODEL,
-                    file=audio_file,
-                    language=TRANSCRIPTION_LANGUAGE,
-                    prompt="Русская разговорная речь. Транскрибируй дословно, не переводи.",
+                    **transcription_kwargs
                 )
 
         original = (transcript.text or "").strip()
