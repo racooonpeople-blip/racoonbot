@@ -525,9 +525,10 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if selected_key is None:
         await message.reply_text(
-            "🎙 Перед отправкой записи выбери язык аудио.\n"
-            "От этого напрямую зависит качество распознавания.\n\n"
-            "Если язык неизвестен, можно выбрать «Определить автоматически».",
+            "🦝 Помоги Еноту услышать тебя точнее.\n\n"
+            "🎙 Перед отправкой записи выбери язык аудио. "
+            "От выбранного языка напрямую зависит качество распознавания.\n\n"
+            "Если язык неизвестен, нажми «Определить автоматически».",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")]]
             ),
