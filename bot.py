@@ -47,21 +47,84 @@ TRANSCRIPTION_LANGUAGES = {
 }
 
 
-def language_keyboard():
+def navigation_row(back_callback: str):
+    return [
+        InlineKeyboardButton("⬅️ Назад", callback_data=back_callback),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu"),
+    ]
+
+
+def main_menu_keyboard():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")]]
+    )
+
+
+def language_keyboard(source: str = "main"):
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Определить автоматически", callback_data="lang:auto"),
-                InlineKeyboardButton("Русский", callback_data="lang:ru"),
-                InlineKeyboardButton("English", callback_data="lang:en"),
+                InlineKeyboardButton(
+                    "Определить автоматически",
+                    callback_data=f"lang:auto:{source}",
+                ),
             ],
             [
-                InlineKeyboardButton("עברית", callback_data="lang:he"),
-                InlineKeyboardButton("العربية", callback_data="lang:ar"),
-                InlineKeyboardButton("فارسی", callback_data="lang:fa"),
+                InlineKeyboardButton("Русский", callback_data=f"lang:ru:{source}"),
+                InlineKeyboardButton("English", callback_data=f"lang:en:{source}"),
             ],
+            [
+                InlineKeyboardButton("עברית", callback_data=f"lang:he:{source}"),
+                InlineKeyboardButton("العربية", callback_data=f"lang:ar:{source}"),
+                InlineKeyboardButton("فارسی", callback_data=f"lang:fa:{source}"),
+            ],
+            navigation_row(
+                f"result_menu:{source}" if source != "main" else "main_menu"
+            ),
         ]
     )
+
+
+def result_keyboard(item_id: str):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
+                InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
+            ],
+            [
+                InlineKeyboardButton("Перевести", callback_data=f"translate:{item_id}"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🎙 Выбрать язык аудио",
+                    callback_data=f"language_menu:{item_id}",
+                ),
+            ],
+            navigation_row("main_menu"),
+        ]
+    )
+
+
+def translation_keyboard(item_id: str):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("English", callback_data=f"tr:en:{item_id}"),
+                InlineKeyboardButton("עברית", callback_data=f"tr:he:{item_id}"),
+            ],
+            [
+                InlineKeyboardButton("Русский", callback_data=f"tr:ru:{item_id}"),
+                InlineKeyboardButton("العربية", callback_data=f"tr:ar:{item_id}"),
+                InlineKeyboardButton("فارسی", callback_data=f"tr:fa:{item_id}"),
+            ],
+            navigation_row(f"result_menu:{item_id}"),
+        ]
+    )
+
+
+def output_navigation_keyboard(item_id: str):
+    return InlineKeyboardMarkup([navigation_row(f"result_menu:{item_id}")])
 
 
 async def current_transcription_language(
@@ -206,9 +269,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎙 Для более точного результата заранее выбери язык, на котором говорят в записи.\n"
         "От выбранного языка напрямую зависит качество распознавания и точность текста.",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
-        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -235,7 +296,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "От выбранного языка напрямую зависит качество распознавания и точность текста. "
         "Это не перевод.",
         parse_mode="HTML",
-        reply_markup=language_keyboard(),
+        reply_markup=language_keyboard("main"),
     )
 
 
@@ -261,12 +322,14 @@ def get_media_info(message):
     return None, None
 
 
-async def send_long_text(message, text: str, parse_mode=None):
+async def send_long_text(message, text: str, parse_mode=None, reply_markup=None):
     chunk_size = 3900
-    for i in range(0, len(text), chunk_size):
+    chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
+    for index, chunk in enumerate(chunks):
         await message.reply_text(
-            text[i:i + chunk_size],
+            chunk,
             parse_mode=parse_mode,
+            reply_markup=reply_markup if index == len(chunks) - 1 else None,
         )
 
 
@@ -535,23 +598,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.exception("Persistent save failed")
 
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
-                    InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
-                ],
-                [
-                    InlineKeyboardButton("Перевести", callback_data=f"translate:{item_id}"),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🎙 Выбрать язык аудио",
-                        callback_data="language_menu",
-                    ),
-                ],
-            ]
-        )
+        keyboard = result_keyboard(item_id)
 
         body = format_structured_text(structured)
         await status.edit_text(
@@ -574,25 +621,32 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
 
     data = query.data or ""
 
-    if data == "language_menu":
-        selected, (label, _) = await current_transcription_language(
+    if data.startswith("language_menu"):
+        parts = data.split(":", 1)
+        source = parts[1] if len(parts) == 2 and parts[1] else "main"
+
+        _, (label, _) = await current_transcription_language(
             context,
             query.message.chat_id,
         )
-        keyboard = language_keyboard()
+
         await query.message.reply_text(
             "🎙 <b>Язык аудио</b>\n\n"
             f"Сейчас: <b>{html.escape(label)}</b>\n"
             "Выбери язык, на котором говорят в записи.\n"
             "От выбранного языка напрямую зависит качество распознавания и точность текста.\n\n"
-            "Если язык не выбран, Енот попробует определить его автоматически, но точность может быть ниже. Это не перевод.",
+            "Если язык не выбран, Енот попробует определить его автоматически, "
+            "но точность может быть ниже. Это не перевод.",
             parse_mode="HTML",
-            reply_markup=keyboard,
+            reply_markup=language_keyboard(source),
         )
         return
 
     if data.startswith("lang:"):
-        selected = data.split(":", 1)[1]
+        parts = data.split(":", 2)
+        selected = parts[1] if len(parts) > 1 else ""
+        source = parts[2] if len(parts) > 2 and parts[2] else "main"
+
         if selected not in TRANSCRIPTION_LANGUAGES:
             return
 
@@ -603,19 +657,70 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
         )
         label, _ = TRANSCRIPTION_LANGUAGES[selected]
 
+        back_callback = (
+            f"language_menu:{source}" if source != "main" else "language_menu:main"
+        )
+        nav = InlineKeyboardMarkup([navigation_row(back_callback)])
+
         if selected == "auto":
             await query.message.reply_text(
                 "🦝 Язык аудио не выбран.\n"
                 "Енот попробует определить его автоматически, но точность может быть ниже.\n"
                 "Для лучшего результата выбери язык вручную перед отправкой записи.",
-                parse_mode="HTML",
+                reply_markup=nav,
             )
         else:
             await query.message.reply_text(
                 f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
                 "Этот выбор поможет Еноту точнее распознать речь. Теперь пришли запись.",
                 parse_mode="HTML",
+                reply_markup=nav,
             )
+        return
+
+
+async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "main_menu":
+        await query.message.reply_text(
+            "🦝 <b>Главное меню</b>\n\n"
+            "Пришли голосовое, аудио или видео. "
+            "Для более точного результата выбери язык аудио заранее.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    if data.startswith("result_menu:"):
+        item_id = data.split(":", 1)[1]
+        item = context.user_data.get("racooon_items", {}).get(item_id)
+
+        if not item:
+            try:
+                saved = await load_transcript(query.message.chat_id, item_id)
+            except Exception:
+                logger.exception("Persistent load failed")
+                saved = None
+
+            if saved:
+                original = saved["original"]
+                language_code = saved["language_code"]
+                remember_transcript(context, item_id, original, language_code)
+            else:
+                await query.message.reply_text(
+                    "🦝 Я не нашёл эту запись.",
+                    reply_markup=main_menu_keyboard(),
+                )
+                return
+
+        await query.message.reply_text(
+            "🦝 <b>Действия с записью</b>",
+            parse_mode="HTML",
+            reply_markup=result_keyboard(item_id),
+        )
         return
 
 
@@ -626,10 +731,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split(":")
     action = parts[0]
 
-    if action == "language_menu" and len(parts) == 1:
-        item_id = None
-        target_language = None
-    elif action == "tr" and len(parts) == 3:
+    if action == "tr" and len(parts) == 3:
         _, target_language, item_id = parts
     elif len(parts) == 2:
         action, item_id = parts
@@ -668,6 +770,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.message,
             "<b>Оригинал:</b>\n" + html.escape(original),
             parse_mode="HTML",
+            reply_markup=output_navigation_keyboard(item_id),
         )
         return
 
@@ -680,31 +783,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status.edit_text(
                 "📝 <b>Заметки</b>\n\n" + html.escape(notes),
                 parse_mode="HTML",
+                reply_markup=output_navigation_keyboard(item_id),
             )
         except Exception:
             logger.exception("Notes failed")
             await status.edit_text(
-                "🦝 Не получилось сделать заметки. Попробуй ещё раз чуть позже."
+                "🦝 Не получилось сделать заметки. Попробуй ещё раз чуть позже.",
+                reply_markup=output_navigation_keyboard(item_id),
             )
         return
 
     if action == "translate":
-        language_keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("English", callback_data=f"tr:en:{item_id}"),
-                    InlineKeyboardButton("עברית", callback_data=f"tr:he:{item_id}"),
-                ],
-                [
-                    InlineKeyboardButton("Русский", callback_data=f"tr:ru:{item_id}"),
-                    InlineKeyboardButton("العربية", callback_data=f"tr:ar:{item_id}"),
-                    InlineKeyboardButton("فارسی", callback_data=f"tr:fa:{item_id}"),
-                ],
-            ]
-        )
         await query.message.reply_text(
             "🌍 Куда перевести?",
-            reply_markup=language_keyboard,
+            reply_markup=translation_keyboard(item_id),
         )
         return
 
@@ -725,11 +817,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status.edit_text(
                 f"🌍 <b>{html.escape(title)}</b>\n\n" + html.escape(translated),
                 parse_mode="HTML",
+                reply_markup=output_navigation_keyboard(item_id),
             )
         except Exception:
             logger.exception("Translation failed")
             await status.edit_text(
-                "🦝 Не получилось перевести. Попробуй ещё раз чуть позже."
+                "🦝 Не получилось перевести. Попробуй ещё раз чуть позже.",
+                reply_markup=output_navigation_keyboard(item_id),
             )
 
 
@@ -763,8 +857,14 @@ def main():
     app.add_handler(CommandHandler("language", language_command))
     app.add_handler(
         CallbackQueryHandler(
+            navigation_callback,
+            pattern=r"^(main_menu|result_menu:)",
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(
             audio_language_callback,
-            pattern=r"^(language_menu|lang:)",
+            pattern=r"^(language_menu(?::.*)?|lang:)",
         )
     )
     app.add_handler(CallbackQueryHandler(button_callback))
