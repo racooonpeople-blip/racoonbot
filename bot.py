@@ -201,26 +201,26 @@ async def load_transcript(chat_id: int, item_id: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     await update.message.reply_text(
         "🦝 Енот готов. Пришли голосовое, аудио или видео.\n\n"
         "🎙 Для более точного результата заранее выбери язык, на котором говорят в записи.\n"
-        "От выбранного языка напрямую зависит качество распознавания и точность текста.\n"
-        f"Сейчас: <b>{html.escape(label)}</b>",
+        "От выбранного языка напрямую зависит качество распознавания и точность текста.",
         parse_mode="HTML",
-        reply_markup=language_keyboard(),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
+        ),
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео — я расшифрую его и разложу по смыслу.\n\n"
         "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
-        "От выбранного языка напрямую зависит качество распознавания и точность текста.\n"
-        f"Сейчас: <b>{html.escape(label)}</b>",
+        "От выбранного языка напрямую зависит качество распознавания и точность текста.",
         parse_mode="HTML",
-        reply_markup=language_keyboard(),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
+        ),
     )
 
 
@@ -546,7 +546,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [
                     InlineKeyboardButton(
-                        f"🎙 Выбрать язык аудио · {selected_label}",
+                        "🎙 Выбрать язык аудио",
                         callback_data="language_menu",
                     ),
                 ],
@@ -734,13 +734,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео.\n\n"
-        "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
-        f"Сейчас: <b>{html.escape(label)}</b>",
+        "🎙 Для более точного результата выбери язык аудио до отправки записи.",
         parse_mode="HTML",
-        reply_markup=language_keyboard(),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu")]]
+        ),
     )
 
 
