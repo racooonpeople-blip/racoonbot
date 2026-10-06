@@ -61,6 +61,7 @@ def main_menu_keyboard():
             [InlineKeyboardButton("🔗 Вставить ссылку", callback_data="submit_link")],
             [InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")],
             [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
+            [InlineKeyboardButton("Что там по монеткам? 🦝", callback_data="plans")],
         ]
     )
 
@@ -436,6 +437,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Перед первой записью выбери язык аудио. Если язык неизвестен — используй «Определить автоматически».",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard(),
+    )
+
+
+async def plans_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "🦝 <b>Актуальные планы</b>\n\n"
+        "Сейчас здесь появятся актуальные варианты использования Racooon. "
+        "Пока бесплатный режим — до 4 файлов в месяц, каждый продолжительностью до 5 минут.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([navigation_row("main_menu")]),
     )
 
 
@@ -1281,6 +1294,7 @@ def main():
             pattern=r"^(upload_media|submit_link)$",
         )
     )
+    app.add_handler(CallbackQueryHandler(plans_callback, pattern=r"^plans$"))
     app.add_handler(
         CallbackQueryHandler(
             navigation_callback,
