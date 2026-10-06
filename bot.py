@@ -476,12 +476,23 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context,
                     message.chat_id,
                 )
+                language_prompts = {
+                    "ru": "Русская речь. Транскрибируй дословно на русском языке. Не переводи и не меняй смысл.",
+                    "en": "English speech. Transcribe verbatim in English. Do not translate or change the meaning.",
+                    "he": "דיבור בעברית. תמלל במדויק בעברית. אל תתרגם ואל תשנה את המשמעות.",
+                    "ar": "كلام باللغة العربية. انسخ الكلام حرفيًا بالعربية. لا تترجم ولا تغيّر المعنى.",
+                    "fa": "گفتار فارسی. متن را دقیقاً به فارسی پیاده‌سازی کن. ترجمه نکن و معنی را تغییر نده.",
+                }
+
                 transcription_kwargs = {
                     "model": TRANSCRIPTION_MODEL,
                     "file": audio_file,
-                    "prompt": (
-                        "Transcribe exactly in the language or languages spoken. "
-                        "Do not translate. Preserve names, numbers, dates, times, and code-switching."
+                    "prompt": language_prompts.get(
+                        selected_language,
+                        (
+                            "Transcribe exactly in the language or languages spoken. "
+                            "Do not translate. Preserve names, numbers, dates, times, and code-switching."
+                        ),
                     ),
                 }
 
@@ -554,6 +565,49 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+
+    if data == "language_menu":
+        selected, (label, _) = await current_transcription_language(
+            context,
+            query.message.chat_id,
+        )
+        keyboard = language_keyboard()
+        await query.message.reply_text(
+            "🎙 <b>Язык аудио</b>\n\n"
+            f"Сейчас: <b>{html.escape(label)}</b>\n"
+            "Выбери язык, на котором говорят в записи. "
+            "Если язык известен заранее, это даст более точный результат.\n\n"
+            "Это не перевод.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
+    if data.startswith("lang:"):
+        selected = data.split(":", 1)[1]
+        if selected not in TRANSCRIPTION_LANGUAGES:
+            return
+
+        await set_transcription_language(
+            context,
+            query.message.chat_id,
+            selected,
+        )
+        label, _ = TRANSCRIPTION_LANGUAGES[selected]
+
+        await query.message.reply_text(
+            f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
+            "Теперь пришли запись.",
+            parse_mode="HTML",
+        )
+        return
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -570,33 +624,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action, item_id = parts
         target_language = None
     else:
-        return
-
-    if action == "language_menu":
-        await query.message.reply_text(
-            "🎙 Выбери язык аудио.\n\n"
-            "Авто — Енот попробует определить язык сам. "
-            "Если язык известен заранее, выбор вручную даст более точный результат.\n\n"
-            "Это не перевод.",
-            reply_markup=language_keyboard(),
-        )
-        return
-
-    if action == "lang":
-        selected = item_id
-        if selected not in TRANSCRIPTION_LANGUAGES:
-            return
-        await set_transcription_language(
-            context,
-            query.message.chat_id,
-            selected,
-        )
-        label, _ = TRANSCRIPTION_LANGUAGES[selected]
-        await query.message.reply_text(
-            f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
-            "Теперь пришли запись.",
-            parse_mode="HTML",
-        )
         return
 
     item = context.user_data.get("racooon_items", {}).get(item_id)
@@ -723,6 +750,12 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("language", language_command))
+    app.add_handler(
+        CallbackQueryHandler(
+            audio_language_callback,
+            pattern=r"^(language_menu|lang:)",
+        )
+    )
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(
         MessageHandler(
