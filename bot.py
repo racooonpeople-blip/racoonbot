@@ -205,6 +205,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦝 Енот готов. Пришли голосовое, аудио или видео.\n\n"
         "🎙 Для более точного результата заранее выбери язык, на котором говорят в записи.\n"
+        "От выбранного языка напрямую зависит качество распознавания и точность текста.\n"
         f"Сейчас: <b>{html.escape(label)}</b>",
         parse_mode="HTML",
         reply_markup=language_keyboard(),
@@ -216,6 +217,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео — я расшифрую его и разложу по смыслу.\n\n"
         "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
+        "От выбранного языка напрямую зависит качество распознавания и точность текста.\n"
         f"Сейчас: <b>{html.escape(label)}</b>",
         parse_mode="HTML",
         reply_markup=language_keyboard(),
@@ -230,7 +232,8 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🎙 Сейчас: <b>{html.escape(label)}</b>\n\n"
         "Выбери язык, на котором говорят в аудио. "
-        "Это помогает распознаванию и не является переводом.",
+        "От выбранного языка напрямую зависит качество распознавания и точность текста. "
+        "Это не перевод.",
         parse_mode="HTML",
         reply_markup=language_keyboard(),
     )
@@ -580,9 +583,9 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text(
             "🎙 <b>Язык аудио</b>\n\n"
             f"Сейчас: <b>{html.escape(label)}</b>\n"
-            "Выбери язык, на котором говорят в записи. "
-            "Если язык известен заранее, это даст более точный результат.\n\n"
-            "Это не перевод.",
+            "Выбери язык, на котором говорят в записи.\n"
+            "От выбранного языка напрямую зависит качество распознавания и точность текста.\n\n"
+            "Если язык неизвестен, оставь Авто. Это не перевод.",
             parse_mode="HTML",
             reply_markup=keyboard,
         )
@@ -602,7 +605,7 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
 
         await query.message.reply_text(
             f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
-            "Теперь пришли запись.",
+            "Этот выбор поможет Еноту точнее распознать речь. Теперь пришли запись.",
             parse_mode="HTML",
         )
         return
