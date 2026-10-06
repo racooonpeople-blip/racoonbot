@@ -142,13 +142,23 @@ async def current_transcription_language(
 
     if db_pool is not None:
         try:
-            saved = await db_pool.fetchval(
-                "SELECT transcription_language FROM user_settings WHERE chat_id = $1",
+            saved = await db_pool.fetchrow(
+                """
+                SELECT transcription_language, transcription_language_confirmed
+                FROM user_settings
+                WHERE chat_id = $1
+                """,
                 chat_id,
             )
-            if saved in TRANSCRIPTION_LANGUAGES:
-                context.user_data["transcription_language"] = saved
-                return saved, TRANSCRIPTION_LANGUAGES[saved]
+            if (
+                saved
+                and saved["transcription_language_confirmed"]
+                and saved["transcription_language"] in TRANSCRIPTION_LANGUAGES
+            ):
+                selected = saved["transcription_language"]
+                context.user_data["transcription_language"] = selected
+                context.user_data["transcription_language_confirmed"] = True
+                return selected, TRANSCRIPTION_LANGUAGES[selected]
         except Exception:
             logger.exception("Loading language preference failed")
 
@@ -170,11 +180,16 @@ async def set_transcription_language(
     if db_pool is not None:
         await db_pool.execute(
             """
-            INSERT INTO user_settings (chat_id, transcription_language)
-            VALUES ($1, $2)
+            INSERT INTO user_settings (
+                chat_id,
+                transcription_language,
+                transcription_language_confirmed
+            )
+            VALUES ($1, $2, TRUE)
             ON CONFLICT (chat_id)
             DO UPDATE SET
                 transcription_language = EXCLUDED.transcription_language,
+                transcription_language_confirmed = TRUE,
                 updated_at = NOW()
             """,
             chat_id,
@@ -213,6 +228,12 @@ async def init_db(application: Application):
             transcription_language TEXT NOT NULL DEFAULT 'auto',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+        """
+    )
+    await db_pool.execute(
+        """
+        ALTER TABLE user_settings
+        ADD COLUMN IF NOT EXISTS transcription_language_confirmed BOOLEAN NOT NULL DEFAULT FALSE
         """
     )
     logger.info("Persistent transcript storage is ready")
