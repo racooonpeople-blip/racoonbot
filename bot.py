@@ -243,7 +243,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = InlineKeyboardMarkup(
             [[
-                InlineKeyboardButton("Полный текст", callback_data=f"full:{item_id}"),
+                InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
                 InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
             ]]
         )
