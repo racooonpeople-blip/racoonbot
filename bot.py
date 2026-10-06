@@ -34,21 +34,60 @@ SUPPORTED_EXTENSIONS = {
     ".m4a", ".ogg", ".wav", ".webm",
 }
 
+TRANSCRIPTION_LANGUAGES = {
+    "auto": ("Авто", None),
+    "ru": ("Русский", "ru"),
+    "en": ("English", "en"),
+    "he": ("עברית", "he"),
+    "ar": ("العربية", "ar"),
+    "fa": ("فارسی", "fa"),
+}
+
+
+def language_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Авто", callback_data="lang:auto"),
+                InlineKeyboardButton("Русский", callback_data="lang:ru"),
+                InlineKeyboardButton("English", callback_data="lang:en"),
+            ],
+            [
+                InlineKeyboardButton("עברית", callback_data="lang:he"),
+                InlineKeyboardButton("العربية", callback_data="lang:ar"),
+                InlineKeyboardButton("فارسی", callback_data="lang:fa"),
+            ],
+        ]
+    )
+
+
+def current_transcription_language(context: ContextTypes.DEFAULT_TYPE):
+    selected = context.user_data.get("transcription_language", "auto")
+    return TRANSCRIPTION_LANGUAGES.get(selected, TRANSCRIPTION_LANGUAGES["auto"])
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    label, _ = current_transcription_language(context)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+    )
     await update.message.reply_text(
         "🦝 Racooon is awake.\n\n"
-        "Send me a voice message, audio, video, or an audio/video file.\n"
-        "I’ll turn it into text and sort out what matters.\n\n"
-        "/start — start Racooon\n"
-        "/help — help"
+        "Пришли голосовое, аудио или видео — я превращу его в текст и разложу по смыслу.\n\n"
+        "По умолчанию язык определяется автоматически.",
+        reply_markup=keyboard,
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    label, _ = current_transcription_language(context)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+    )
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео.\n\n"
-        "Я расшифрую его, разложу по смыслу и сохраню оригинальный текст."
+        "Я расшифрую его, разложу по смыслу и сохраню оригинальный текст.",
+        reply_markup=keyboard,
     )
 
 
@@ -248,6 +287,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             with local_path.open("rb") as audio_file:
+                _, selected_language = current_transcription_language(context)
                 transcription_kwargs = {
                     "model": TRANSCRIPTION_MODEL,
                     "file": audio_file,
@@ -256,7 +296,11 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "Do not translate. Preserve names, numbers, dates, times, and code-switching."
                     ),
                 }
-                if TRANSCRIPTION_LANGUAGE:
+
+                # Per-user choice wins. If Auto is selected, let the model detect the language.
+                if selected_language:
+                    transcription_kwargs["language"] = selected_language
+                elif TRANSCRIPTION_LANGUAGE:
                     transcription_kwargs["language"] = TRANSCRIPTION_LANGUAGE
 
                 transcript = await client.audio.transcriptions.create(
@@ -313,12 +357,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split(":")
     action = parts[0]
 
-    if action == "tr" and len(parts) == 3:
+    if action == "language_menu" and len(parts) == 1:
+        item_id = None
+        target_language = None
+    elif action == "tr" and len(parts) == 3:
         _, target_language, item_id = parts
     elif len(parts) == 2:
         action, item_id = parts
         target_language = None
     else:
+        return
+
+    if action == "language_menu":
+        await query.message.reply_text(
+            "🌐 Выбери язык транскрипции.\n\n"
+            "Авто — Енот сам определит язык записи.",
+            reply_markup=language_keyboard(),
+        )
+        return
+
+    if action == "lang":
+        selected = item_id
+        if selected not in TRANSCRIPTION_LANGUAGES:
+            return
+        context.user_data["transcription_language"] = selected
+        label, _ = TRANSCRIPTION_LANGUAGES[selected]
+        await query.message.reply_text(
+            f"🦝 Язык транскрипции: <b>{html.escape(label)}</b>",
+            parse_mode="HTML",
+        )
         return
 
     item = context.user_data.get("racooon_items", {}).get(item_id)
@@ -401,8 +468,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    label, _ = current_transcription_language(context)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+    )
     await update.message.reply_text(
-        "🦝 Пришли мне голосовое, аудио или видео — я разберу его."
+        "🦝 Пришли мне голосовое, аудио или видео — я разберу его.",
+        reply_markup=keyboard,
     )
 
 
