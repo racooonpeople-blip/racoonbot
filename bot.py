@@ -57,8 +57,8 @@ def navigation_row(back_callback: str):
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
             [InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")],
+            [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
         ]
     )
 
@@ -299,9 +299,15 @@ def library_item_title(row) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🦝 Енот готов. Пришли голосовое, аудио или видео.\n\n"
-        "🎙 Для более точного результата заранее выбери язык, на котором говорят в записи.\n"
-        "От выбранного языка напрямую зависит качество распознавания и точность текста.",
+        "🦝 <b>Привет! Я Енот.</b>\n"
+        "Скидывай мне голосовые, аудио и видео — я разберу их, достану главное и сохраню, чтобы потом ничего не искать.\n\n"
+        "🎙 Перед первой записью выбери язык аудио — так я услышу тебя точнее.\n\n"
+        "<b>Что ещё я умею:</b>\n"
+        "📝 превращать записи в понятные заметки\n"
+        "🌍 переводить на другой язык\n"
+        "📌 находить задачи, даты, людей и важные детали\n"
+        "📚 хранить твои записи, чтобы к ним можно было вернуться позже\n\n"
+        "<b>Просто отправь мне запись — дальше я разберусь. 🦝</b>",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard(),
     )
