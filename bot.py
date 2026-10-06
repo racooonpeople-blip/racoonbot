@@ -202,37 +202,34 @@ async def load_transcript(chat_id: int, item_id: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
-    )
     await update.message.reply_text(
-        "🦝 Racooon is awake.\n\n"
-        "Пришли голосовое, аудио или видео — я превращу его в текст и разложу по смыслу.\n\n"
-        "По умолчанию язык определяется автоматически.",
-        reply_markup=keyboard,
+        "🦝 Енот готов. Пришли голосовое, аудио или видео.\n\n"
+        "🎙 Для более точного результата заранее выбери язык, на котором говорят в записи.\n"
+        f"Сейчас: <b>{html.escape(label)}</b>",
+        parse_mode="HTML",
+        reply_markup=language_keyboard(),
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
-    )
     await update.message.reply_text(
-        "🦝 Пришли голосовое, аудио или видео.\n\n"
-        "Я расшифрую его, разложу по смыслу и сохраню оригинальный текст.",
-        reply_markup=keyboard,
+        "🦝 Пришли голосовое, аудио или видео — я расшифрую его и разложу по смыслу.\n\n"
+        "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
+        f"Сейчас: <b>{html.escape(label)}</b>",
+        parse_mode="HTML",
+        reply_markup=language_keyboard(),
     )
 
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    selected, (label, _) = await current_transcription_language(
+    _, (label, _) = await current_transcription_language(
         context,
         update.effective_chat.id,
     )
     await update.message.reply_text(
-        f"🎙 Сейчас язык аудио: <b>{html.escape(label)}</b>\n\n"
-        "Выбери язык, на котором говорят в записи. "
+        f"🎙 Сейчас: <b>{html.escape(label)}</b>\n\n"
+        "Выбери язык, на котором говорят в аудио. "
         "Это помогает распознаванию и не является переводом.",
         parse_mode="HTML",
         reply_markup=language_keyboard(),
@@ -535,7 +532,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [
                     InlineKeyboardButton(
-                        f"🎙 Язык аудио: {selected_label}",
+                        f"🎙 Выбрать язык аудио · {selected_label}",
                         callback_data="language_menu",
                     ),
                 ],
@@ -577,8 +574,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "language_menu":
         await query.message.reply_text(
-            "🎙 Выбери язык, на котором говорят в аудио.\n\n"
-            "Авто — Енот сам определит язык записи. Это не перевод.",
+            "🎙 Выбери язык аудио.\n\n"
+            "Авто — Енот попробует определить язык сам. "
+            "Если язык известен заранее, выбор вручную даст более точный результат.\n\n"
+            "Это не перевод.",
             reply_markup=language_keyboard(),
         )
         return
@@ -594,7 +593,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         label, _ = TRANSCRIPTION_LANGUAGES[selected]
         await query.message.reply_text(
-            f"🦝 Язык аудио: <b>{html.escape(label)}</b>",
+            f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
+            "Теперь пришли запись.",
             parse_mode="HTML",
         )
         return
@@ -697,12 +697,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, (label, _) = await current_transcription_language(context, update.effective_chat.id)
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
-    )
     await update.message.reply_text(
-        "🦝 Пришли мне голосовое, аудио или видео — я разберу его.",
-        reply_markup=keyboard,
+        "🦝 Пришли голосовое, аудио или видео.\n\n"
+        "🎙 Для более точного результата выбери язык аудио до отправки записи.\n"
+        f"Сейчас: <b>{html.escape(label)}</b>",
+        parse_mode="HTML",
+        reply_markup=language_keyboard(),
     )
 
 
