@@ -147,9 +147,8 @@ async def current_transcription_language(
         except Exception:
             logger.exception("Loading language preference failed")
 
-    selected = "auto"
-    context.user_data["transcription_language"] = selected
-    return selected, TRANSCRIPTION_LANGUAGES[selected]
+    selected = None
+    return selected, ("Не выбран", None)
 
 
 async def set_transcription_language(
@@ -161,6 +160,7 @@ async def set_transcription_language(
         raise ValueError("Unsupported transcription language")
 
     context.user_data["transcription_language"] = selected
+    context.user_data["transcription_language_confirmed"] = True
 
     if db_pool is not None:
         await db_pool.execute(
@@ -518,6 +518,22 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    selected_key, (selected_label, selected_language) = await current_transcription_language(
+        context,
+        message.chat_id,
+    )
+
+    if selected_key is None:
+        await message.reply_text(
+            "🎙 Перед отправкой записи выбери язык аудио.\n"
+            "От этого напрямую зависит качество распознавания.\n\n"
+            "Если язык неизвестен, можно выбрать «Определить автоматически».",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")]]
+            ),
+        )
+        return
+
     status = await message.reply_text("🦝 Енот уже разбирается…")
 
     try:
@@ -538,10 +554,6 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             with local_path.open("rb") as audio_file:
-                selected_key, (selected_label, selected_language) = await current_transcription_language(
-                    context,
-                    message.chat_id,
-                )
                 language_prompts = {
                     "ru": "Русская речь. Транскрибируй дословно на русском языке. Не переводи и не меняй смысл.",
                     "en": "English speech. Transcribe verbatim in English. Do not translate or change the meaning.",
@@ -635,8 +647,9 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Сейчас: <b>{html.escape(label)}</b>\n"
             "Выбери язык, на котором говорят в записи.\n"
             "От выбранного языка напрямую зависит качество распознавания и точность текста.\n\n"
-            "Если язык не выбран, Енот попробует определить его автоматически, "
-            "но точность может быть ниже. Это не перевод.",
+            "Выбор обязателен перед первой записью. "
+            "Если язык неизвестен, нажми «Определить автоматически», но точность может быть ниже. "
+            "Это не перевод.",
             parse_mode="HTML",
             reply_markup=language_keyboard(source),
         )
