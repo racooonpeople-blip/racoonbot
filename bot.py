@@ -302,47 +302,70 @@ async def search_transcripts(chat_id: int, search_text: str, limit: int = 8):
     if db_pool is None:
         return []
 
-    words = [word.strip() for word in search_text.split() if len(word.strip()) >= 2]
-    if not words:
-        return []
-
     rows = await db_pool.fetch(
         """
         SELECT item_id, original, structured, language_code, created_at
         FROM transcripts
         WHERE chat_id = $1
         ORDER BY created_at DESC
-        LIMIT 100
+        LIMIT 80
         """,
         chat_id,
     )
+    if not rows:
+        return []
 
+    # Fast literal pass first. This keeps obvious searches instant and cheap.
+    words = [word.casefold().strip(".,!?;:()[]{}«»\"'") for word in search_text.split()]
+    words = [word for word in words if len(word) >= 2]
     scored = []
     for row in rows:
         haystack = f"{row['original']} {row['structured'] or ''}".casefold()
-        score = sum(haystack.count(word.casefold()) for word in words)
+        score = sum(haystack.count(word) for word in words)
         if score:
             scored.append((score, row))
 
-    scored.sort(
-        key=lambda pair: (pair[0], pair[1]["created_at"]),
-        reverse=True,
-    )
-    return [row for _, row in scored[:limit]]
+    if scored:
+        scored.sort(key=lambda pair: (pair[0], pair[1]["created_at"]), reverse=True)
+        return [row for _, row in scored[:limit]]
 
+    # If the user remembers the meaning rather than the exact words, ask the model
+    # to rank the saved records semantically. Only IDs from this user's rows are valid.
+    candidates = []
+    by_id = {}
+    for row in rows:
+        item_id = str(row["item_id"])
+        by_id[item_id] = row
+        text_value = (row["structured"] or row["original"] or "").strip()
+        candidates.append(f"ID {item_id}: {text_value[:1200]}")
 
-def library_item_title(row) -> str:
-    source = (row["structured"] or row["original"] or "").strip().replace("\n", " ")
-    source = " ".join(source.split())
-    if not source:
-        source = "Без названия"
+    try:
+        response = await client.responses.create(
+            model=TEXT_MODEL,
+            input=(
+                "You search a private user's saved transcript library. "
+                "Return only the IDs of records that are genuinely relevant to the query, "
+                "most relevant first, maximum 8. Do not invent IDs. "
+                "If nothing is relevant, return NONE.\n\n"
+                f"QUERY: {search_text}\n\n"
+                "RECORDS:\n" + "\n\n".join(candidates)
+            ),
+        )
+        raw = (response.output_text or "").strip()
+        if raw.upper() == "NONE":
+            return []
 
-    if len(source) > 42:
-        source = source[:39].rstrip() + "…"
-
-    created_at = row["created_at"]
-    stamp = created_at.strftime("%d.%m %H:%M") if created_at else ""
-    return f"{stamp} · {source}" if stamp else source
+        import re
+        found_ids = []
+        for candidate_id in re.findall(r"\d+", raw):
+            if candidate_id in by_id and candidate_id not in found_ids:
+                found_ids.append(candidate_id)
+            if len(found_ids) >= limit:
+                break
+        return [by_id[item_id] for item_id in found_ids]
+    except Exception:
+        logger.exception("Semantic library search failed")
+        return []
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -853,8 +876,8 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_library_search"] = True
         await query.message.reply_text(
             "🔎 <b>Что найти?</b>\n\n"
-            "Напиши как помнишь — например: «торт для Маши», «посылка» или «встреча в четверг».\n"
-            "Енот пороется в сохранённых записях. 🦝",
+            "Напиши как помнишь — точные слова не обязательны. Например: «торт для Маши», «посылка» или «встреча в четверг».\n"
+            "Енот поищет и по словам, и по смыслу. 🦝",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([navigation_row("library")]),
         )
