@@ -69,7 +69,7 @@ def current_transcription_language(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label, _ = current_transcription_language(context)
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
     await update.message.reply_text(
         "🦝 Racooon is awake.\n\n"
@@ -82,7 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label, _ = current_transcription_language(context)
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
     await update.message.reply_text(
         "🦝 Пришли голосовое, аудио или видео.\n\n"
@@ -370,8 +370,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "language_menu":
         await query.message.reply_text(
-            "🌐 Выбери язык транскрипции.\n\n"
-            "Авто — Енот сам определит язык записи.",
+            "🎙 Выбери язык, на котором говорят в аудио.\n\n"
+            "Авто — Енот сам определит язык записи. Это не перевод.",
             reply_markup=language_keyboard(),
         )
         return
@@ -383,7 +383,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["transcription_language"] = selected
         label, _ = TRANSCRIPTION_LANGUAGES[selected]
         await query.message.reply_text(
-            f"🦝 Язык транскрипции: <b>{html.escape(label)}</b>",
+            f"🦝 Язык аудио: <b>{html.escape(label)}</b>",
             parse_mode="HTML",
         )
         return
@@ -470,7 +470,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label, _ = current_transcription_language(context)
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"🌐 Язык транскрипции: {label}", callback_data="language_menu")]]
+        [[InlineKeyboardButton(f"🎙 Язык аудио: {label}", callback_data="language_menu")]]
     )
     await update.message.reply_text(
         "🦝 Пришли мне голосовое, аудио или видео — я разберу его.",
