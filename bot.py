@@ -4,6 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import asyncpg
 from openai import AsyncOpenAI
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -26,8 +27,10 @@ OPENAI_API_KEY = "".join(os.getenv("OPENAI_API_KEY", "").split())
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "").strip()
 TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+db_pool = None
 
 SUPPORTED_EXTENSIONS = {
     ".flac", ".mp3", ".mp4", ".mpeg", ".mpga",
@@ -64,6 +67,71 @@ def language_keyboard():
 def current_transcription_language(context: ContextTypes.DEFAULT_TYPE):
     selected = context.user_data.get("transcription_language", "auto")
     return TRANSCRIPTION_LANGUAGES.get(selected, TRANSCRIPTION_LANGUAGES["auto"])
+
+
+async def init_db(application: Application):
+    global db_pool
+
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL is not set; persistent storage is disabled")
+        return
+
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
+    await db_pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transcripts (
+            chat_id BIGINT NOT NULL,
+            item_id BIGINT NOT NULL,
+            original TEXT NOT NULL,
+            structured TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (chat_id, item_id)
+        )
+        """
+    )
+    logger.info("Persistent transcript storage is ready")
+
+
+async def close_db(application: Application):
+    global db_pool
+    if db_pool is not None:
+        await db_pool.close()
+        db_pool = None
+
+
+async def save_transcript(chat_id: int, item_id: str, original: str, structured: str):
+    if db_pool is None:
+        return
+
+    await db_pool.execute(
+        """
+        INSERT INTO transcripts (chat_id, item_id, original, structured)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (chat_id, item_id)
+        DO UPDATE SET
+            original = EXCLUDED.original,
+            structured = EXCLUDED.structured
+        """,
+        chat_id,
+        int(item_id),
+        original,
+        structured,
+    )
+
+
+async def load_transcript(chat_id: int, item_id: str):
+    if db_pool is None:
+        return None
+
+    return await db_pool.fetchrow(
+        """
+        SELECT original, structured
+        FROM transcripts
+        WHERE chat_id = $1 AND item_id = $2
+        """,
+        chat_id,
+        int(item_id),
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,6 +390,10 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         item_id = str(message.message_id)
         remember_transcript(context, item_id, original)
+        try:
+            await save_transcript(message.chat_id, item_id, original, structured)
+        except Exception:
+            logger.exception("Persistent save failed")
 
         keyboard = InlineKeyboardMarkup(
             [
@@ -389,11 +461,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     item = context.user_data.get("racooon_items", {}).get(item_id)
+
     if not item:
-        await query.message.reply_text(
-            "🦝 Этот текст уже не лежит у меня под лапой. Пришли файл ещё раз."
-        )
-        return
+        try:
+            saved = await load_transcript(query.message.chat_id, item_id)
+        except Exception:
+            logger.exception("Persistent load failed")
+            saved = None
+
+        if saved:
+            original = saved["original"]
+            remember_transcript(context, item_id, original)
+            item = {"transcript": original}
+        else:
+            await query.message.reply_text(
+                "🦝 Я не нашёл этот текст. Пришли файл ещё раз."
+            )
+            return
 
     original = item["transcript"]
 
@@ -484,7 +568,13 @@ def main():
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(init_db)
+        .post_shutdown(close_db)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
