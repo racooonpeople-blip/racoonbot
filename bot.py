@@ -57,6 +57,8 @@ def navigation_row(back_callback: str):
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("📎 Загрузить файл / видео", callback_data="upload_media")],
+            [InlineKeyboardButton("🔗 Вставить ссылку", callback_data="submit_link")],
             [InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")],
             [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
         ]
@@ -346,7 +348,7 @@ def library_item_title(row) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦝 <b>Привет! Я Енот.</b>\n"
-        "Скидывай мне голосовые, аудио и видео — я разберу их, достану главное и сохраню, чтобы потом ничего не искать.\n\n"
+        "Скидывай мне голосовые, аудио, видео или ссылки — я разберу их, достану главное и сохраню, чтобы потом ничего не искать.\n\n"
         "🎙 Перед первой записью выбери язык аудио — так я услышу тебя точнее.\n\n"
         "<b>Что ещё я умею:</b>\n"
         "📝 превращать записи в понятные заметки\n"
@@ -890,11 +892,33 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+async def source_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    if data == "upload_media":
+        await query.message.reply_text(
+            "📎 <b>Загрузи файл прямо сюда.</b>\n\nМожно отправить голосовое, аудио или видео — Енот примет его в этом чате. 🦝",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([navigation_row("main_menu")]),
+        )
+        return
+    if data == "submit_link":
+        context.user_data["awaiting_media_link"] = True
+        await query.message.reply_text(
+            "🔗 <b>Пришли ссылку на видео.</b>\n\nПросто вставь её следующим сообщением. 🦝",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([navigation_row("main_menu")]),
+        )
+        return
+
+
 async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data or ""
     context.user_data.pop("awaiting_library_search", None)
+    context.user_data.pop("awaiting_media_link", None)
 
     if data == "main_menu":
         await query.message.reply_text(
@@ -1041,6 +1065,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.pop("awaiting_media_link", False):
+        link = (update.message.text or "").strip()
+        if not (link.startswith("http://") or link.startswith("https://")):
+            await update.message.reply_text(
+                "🦝 Это не похоже на ссылку. Нажми «Вставить ссылку» и пришли адрес, начинающийся с http:// или https://.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        await update.message.reply_text(
+            "🔗 Ссылку поймал. 🦝\n\nЗагрузка видео по ссылке ещё не подключена, поэтому пока отправь само видео или аудиофайл в чат. Следующим шагом подключим разбор видео прямо по ссылке.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
     if context.user_data.pop("awaiting_library_search", False):
         search_text = (update.message.text or "").strip()
         rows = await search_transcripts(update.effective_chat.id, search_text)
@@ -1103,6 +1141,12 @@ def main():
         CallbackQueryHandler(
             library_callback,
             pattern=r"^(library|library_search|library_item:.*)$",
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            source_callback,
+            pattern=r"^(upload_media|submit_link)$",
         )
     )
     app.add_handler(
