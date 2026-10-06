@@ -38,7 +38,7 @@ SUPPORTED_EXTENSIONS = {
 }
 
 TRANSCRIPTION_LANGUAGES = {
-    "auto": ("Авто", None),
+    "auto": ("Не выбран", None),
     "ru": ("Русский", "ru"),
     "en": ("English", "en"),
     "he": ("עברית", "he"),
@@ -51,7 +51,7 @@ def language_keyboard():
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Авто", callback_data="lang:auto"),
+                InlineKeyboardButton("Определить автоматически", callback_data="lang:auto"),
                 InlineKeyboardButton("Русский", callback_data="lang:ru"),
                 InlineKeyboardButton("English", callback_data="lang:en"),
             ],
@@ -585,7 +585,7 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Сейчас: <b>{html.escape(label)}</b>\n"
             "Выбери язык, на котором говорят в записи.\n"
             "От выбранного языка напрямую зависит качество распознавания и точность текста.\n\n"
-            "Если язык неизвестен, оставь Авто. Это не перевод.",
+            "Если язык не выбран, Енот попробует определить его автоматически, но точность может быть ниже. Это не перевод.",
             parse_mode="HTML",
             reply_markup=keyboard,
         )
@@ -603,11 +603,19 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
         )
         label, _ = TRANSCRIPTION_LANGUAGES[selected]
 
-        await query.message.reply_text(
-            f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
-            "Этот выбор поможет Еноту точнее распознать речь. Теперь пришли запись.",
-            parse_mode="HTML",
-        )
+        if selected == "auto":
+            await query.message.reply_text(
+                "🦝 Язык аудио не выбран.\n"
+                "Енот попробует определить его автоматически, но точность может быть ниже.\n"
+                "Для лучшего результата выбери язык вручную перед отправкой записи.",
+                parse_mode="HTML",
+            )
+        else:
+            await query.message.reply_text(
+                f"🦝 Готово. Язык аудио: <b>{html.escape(label)}</b>.\n"
+                "Этот выбор поможет Еноту точнее распознать речь. Теперь пришли запись.",
+                parse_mode="HTML",
+            )
         return
 
 
