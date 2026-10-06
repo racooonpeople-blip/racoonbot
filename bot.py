@@ -6,7 +6,7 @@ from pathlib import Path
 
 import asyncpg
 from openai import AsyncOpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -214,6 +214,19 @@ async def init_db(application: Application):
         """
     )
     logger.info("Persistent transcript storage is ready")
+
+    await application.bot.set_my_commands(
+        [
+            BotCommand("start", "Главное меню"),
+            BotCommand("library", "Мои записи"),
+            BotCommand("language", "Выбрать язык аудио"),
+            BotCommand("help", "Что умеет Енот"),
+        ]
+    )
+    await application.bot.set_chat_menu_button(
+        menu_button=MenuButtonCommands()
+    )
+    logger.info("Telegram command menu is ready")
 
 
 async def close_db(application: Application):
