@@ -446,7 +446,7 @@ async def plans_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(
         "🦝 <b>Что там по монеткам?</b>\n\n"
         "Выбери, сколько работы можно свалить на Енота:\n\n"
-        "<b>🦝 Потестить Енота — 0 ₪</b>\n"
+        "<b>🦝 Потестить Енота, но не кормить — 0 ₪</b>\n"
         "4 файла в месяц · до 5 минут каждый\n\n"
         "<b>🦝 Енот в кармане — 19 ₪/мес.</b>\n"
         "20 файлов в месяц · до 15 минут каждый\n\n"
@@ -457,7 +457,7 @@ async def plans_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("🦝 Потестить Енота · 0 ₪", callback_data="plan:free")],
+                [InlineKeyboardButton("🦝 Потестить Енота, но не кормить · 0 ₪", callback_data="plan:free")],
                 [InlineKeyboardButton("🦝 Енот в кармане · 19 ₪", callback_data="plan:pocket")],
                 [InlineKeyboardButton("🦝 Енот на связи · 29 ₪", callback_data="plan:connected")],
                 [InlineKeyboardButton("🦝 Енот на работе · 42 ₪", callback_data="plan:work")],
@@ -472,7 +472,7 @@ async def plan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     plans = {
-        "free": ("🦝 Потестить Енота", "0 ₪", "4 файла в месяц", "до 5 минут каждый"),
+        "free": ("🦝 Потестить Енота, но не кормить", "0 ₪", "4 файла в месяц", "до 5 минут каждый"),
         "pocket": ("🦝 Енот в кармане", "19 ₪/мес.", "20 файлов в месяц", "до 15 минут каждый"),
         "connected": ("🦝 Енот на связи", "29 ₪/мес.", "50 файлов в месяц", "до 30 минут каждый"),
         "work": ("🦝 Енот на работе", "42 ₪/мес.", "100 файлов в месяц", "до 60 минут каждый"),
