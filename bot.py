@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN = "".join(os.getenv("TELEGRAM_BOT_TOKEN", "").split())
 OPENAI_API_KEY = "".join(os.getenv("OPENAI_API_KEY", "").split())
-TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-transcribe")
+TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe")
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -108,10 +108,11 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            transcript = await client.audio.transcriptions.create(
-                model=TRANSCRIPTION_MODEL,
-                file=local_path,
-            )
+            with local_path.open("rb") as audio_file:
+                transcript = await client.audio.transcriptions.create(
+                    model=TRANSCRIPTION_MODEL,
+                    file=audio_file,
+                )
 
         text = (transcript.text or "").strip()
         if not text:
