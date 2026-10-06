@@ -56,7 +56,10 @@ def navigation_row(back_callback: str):
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")]]
+        [
+            [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
+            [InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")],
+        ]
     )
 
 
@@ -263,6 +266,37 @@ async def load_transcript(chat_id: int, item_id: str):
     )
 
 
+async def load_recent_transcripts(chat_id: int, limit: int = 8):
+    if db_pool is None:
+        return []
+
+    return await db_pool.fetch(
+        """
+        SELECT item_id, original, structured, language_code, created_at
+        FROM transcripts
+        WHERE chat_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        chat_id,
+        limit,
+    )
+
+
+def library_item_title(row) -> str:
+    source = (row["structured"] or row["original"] or "").strip().replace("\n", " ")
+    source = " ".join(source.split())
+    if not source:
+        source = "Без названия"
+
+    if len(source) > 42:
+        source = source[:39].rstrip() + "…"
+
+    created_at = row["created_at"]
+    stamp = created_at.strftime("%d.%m %H:%M") if created_at else ""
+    return f"{stamp} · {source}" if stamp else source
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🦝 Енот готов. Пришли голосовое, аудио или видео.\n\n"
@@ -297,6 +331,32 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Это не перевод.",
         parse_mode="HTML",
         reply_markup=language_keyboard("main"),
+    )
+
+
+async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = await load_recent_transcripts(update.effective_chat.id)
+
+    if not rows:
+        await update.message.reply_text(
+            "📚 <b>Мои записи</b>\n\n"
+            "Здесь пока пусто. Пришли Еноту первую запись — и она появится здесь.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    buttons = [
+        [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
+        for row in rows
+    ]
+    buttons.append(navigation_row("main_menu"))
+
+    await update.message.reply_text(
+        "📚 <b>Мои записи</b>\n\n"
+        "Последние сохранённые записи:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -693,6 +753,78 @@ async def audio_language_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
 
+async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "library":
+        rows = await load_recent_transcripts(query.message.chat_id)
+
+        if not rows:
+            await query.message.reply_text(
+                "📚 <b>Мои записи</b>\n\n"
+                "Здесь пока пусто. Пришли Еноту первую запись — и она появится здесь.",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
+        buttons = [
+            [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
+            for row in rows
+        ]
+        buttons.append(navigation_row("main_menu"))
+
+        await query.message.reply_text(
+            "📚 <b>Мои записи</b>\n\n"
+            "Последние сохранённые записи:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    if data.startswith("library_item:"):
+        item_id = data.split(":", 1)[1]
+        saved = await load_transcript(query.message.chat_id, item_id)
+
+        if not saved:
+            await query.message.reply_text(
+                "🦝 Я не нашёл эту запись.",
+                reply_markup=InlineKeyboardMarkup([navigation_row("library")]),
+            )
+            return
+
+        original = saved["original"]
+        structured = (saved["structured"] or "").strip()
+        language_code = saved["language_code"]
+        remember_transcript(context, item_id, original, language_code)
+
+        body = format_structured_text(structured) if structured else html.escape(original)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Оригинал", callback_data=f"full:{item_id}"),
+                    InlineKeyboardButton("Сделать заметки", callback_data=f"notes:{item_id}"),
+                ],
+                [
+                    InlineKeyboardButton("Перевести", callback_data=f"translate:{item_id}"),
+                ],
+                [
+                    InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data=f"language_menu:{item_id}"),
+                ],
+                navigation_row("library"),
+            ]
+        )
+
+        await query.message.reply_text(
+            "📚 <b>Сохранённая запись</b>\n\n" + body,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
+
 async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -702,6 +834,7 @@ async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text(
             "🦝 <b>Главное меню</b>\n\n"
             "Пришли голосовое, аудио или видео. "
+            "Сохранённые материалы лежат в «Мои записи». "
             "Для более точного результата выбери язык аудио заранее.",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
@@ -869,6 +1002,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("language", language_command))
+    app.add_handler(CommandHandler("library", library_command))
+    app.add_handler(
+        CallbackQueryHandler(
+            library_callback,
+            pattern=r"^(library|library_item:)",
+        )
+    )
     app.add_handler(
         CallbackQueryHandler(
             navigation_callback,
