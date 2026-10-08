@@ -2,6 +2,9 @@ import html
 import logging
 import os
 import tempfile
+from time import monotonic
+
+from security_guards import SlidingWindowLimiter
 from pathlib import Path
 
 import asyncpg
@@ -9,6 +12,7 @@ from openai import AsyncOpenAI
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonCommands, Update
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -28,9 +32,33 @@ TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe
 TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "").strip()
 TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-4o-mini")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+# Set only after choosing a retention policy; 0 preserves existing recordings.
+TRANSCRIPT_RETENTION_DAYS = max(0, int(os.getenv("TRANSCRIPT_RETENTION_DAYS", "0")))
+AI_RATE_LIMITER = SlidingWindowLimiter(limit=12, window_seconds=600)
+GLOBAL_AI_RATE_LIMITER = SlidingWindowLimiter(limit=80, window_seconds=60)
+LAST_RETENTION_CHECK = 0.0
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 db_pool = None
+
+async def enforce_ai_rate_limit(update: Update) -> bool:
+    """Limit paid AI calls per chat and globally within this process."""
+    chat = update.effective_chat
+    if chat and AI_RATE_LIMITER.allow(chat.id) and GLOBAL_AI_RATE_LIMITER.allow("global"):
+        return True
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(
+            "🦝 Слишком много запросов за короткое время. Попробуй чуть позже."
+        )
+    return False
+
+
+async def block_non_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Never process stored transcripts in a group or public channel."""
+    if update.effective_chat and update.effective_chat.type != "private":
+        raise ApplicationHandlerStop
+
 
 SUPPORTED_EXTENSIONS = {
     ".flac", ".mp3", ".mp4", ".mpeg", ".mpga",
@@ -247,6 +275,11 @@ async def init_db(application: Application):
         )
         """
     )
+    try:
+        await cleanup_expired_data(force=True)
+    except Exception:
+        logger.exception("Privacy cleanup failed during startup")
+
     logger.info("Persistent transcript storage is ready")
 
     await application.bot.set_my_commands(
@@ -261,6 +294,27 @@ async def init_db(application: Application):
         menu_button=MenuButtonCommands()
     )
     logger.info("Telegram command menu is ready")
+
+
+async def cleanup_expired_data(force: bool = False):
+    """Remove expired transcripts only when opted in; minimize old quota records."""
+    global LAST_RETENTION_CHECK
+    if db_pool is None:
+        return
+    now = monotonic()
+    if not force and now - LAST_RETENTION_CHECK < 24 * 60 * 60:
+        return
+    if TRANSCRIPT_RETENTION_DAYS > 0:
+        await db_pool.execute(
+            "DELETE FROM transcripts WHERE created_at < "
+            "NOW() - ($1::int * INTERVAL '1 day')",
+            TRANSCRIPT_RETENTION_DAYS,
+        )
+    await db_pool.execute(
+        "DELETE FROM usage_events WHERE created_at < "
+        "date_trunc('month', NOW()) - INTERVAL '2 months'"
+    )
+    LAST_RETENTION_CHECK = now
 
 
 async def close_db(application: Application):
@@ -296,6 +350,10 @@ async def save_transcript(
         structured,
         language_code,
     )
+    try:
+        await cleanup_expired_data()
+    except Exception:
+        logger.exception("Privacy cleanup failed")
 
 
 async def load_transcript(chat_id: int, item_id: str):
@@ -741,33 +799,39 @@ def remember_transcript(
         items.pop(oldest_key, None)
 
 
-async def monthly_free_usage(chat_id: int) -> int:
+async def reserve_free_usage(chat_id: int, item_id: int):
+    """Atomically reserve a free slot before paying for transcription."""
     if db_pool is None:
-        return 0
-    return await db_pool.fetchval(
-        """
-        SELECT COUNT(*)
-        FROM usage_events
-        WHERE chat_id = $1
-          AND created_at >= date_trunc('month', NOW())
-          AND created_at < date_trunc('month', NOW()) + INTERVAL '1 month'
-        """,
-        chat_id,
-    )
+        raise RuntimeError("Quota database is unavailable")
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", chat_id)
+            used = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM usage_events
+                WHERE chat_id = $1
+                  AND created_at >= date_trunc('month', NOW())
+                  AND created_at < date_trunc('month', NOW()) + INTERVAL '1 month'
+                """,
+                chat_id,
+            )
+            if used >= 4:
+                return False, used
+            await conn.execute(
+                "INSERT INTO usage_events (chat_id, item_id) VALUES ($1, $2) "
+                "ON CONFLICT (chat_id, item_id) DO NOTHING",
+                chat_id, item_id,
+            )
+            return True, used
 
 
-async def record_free_usage(chat_id: int, item_id: str):
-    if db_pool is None:
-        return
-    await db_pool.execute(
-        """
-        INSERT INTO usage_events (chat_id, item_id)
-        VALUES ($1, $2)
-        ON CONFLICT (chat_id, item_id) DO NOTHING
-        """,
-        chat_id,
-        int(item_id),
-    )
+async def release_free_usage(chat_id: int, item_id: int):
+    """Return a reserved slot if processing fails."""
+    if db_pool is not None:
+        await db_pool.execute(
+            "DELETE FROM usage_events WHERE chat_id = $1 AND item_id = $2",
+            chat_id, item_id,
+        )
 
 
 async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -786,20 +850,6 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(
             "🦝 Пока я умею разбирать аудио и видео. "
             "Для обычных документов модуль появится позже."
-        )
-        return
-
-    try:
-        used_this_month = await monthly_free_usage(message.chat_id)
-    except Exception:
-        logger.exception("Usage check failed")
-        used_this_month = 0
-
-    if used_this_month >= 4:
-        await message.reply_text(
-            "🦝 Бесплатный лимит на этот месяц уже использован: 4 из 4 файлов.\n\n"
-            "Новый бесплатный лимит откроется в следующем календарном месяце.",
-            reply_markup=main_menu_keyboard(),
         )
         return
 
@@ -838,6 +888,34 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Reject declared oversize media before download.
+    for media in (message.voice, message.audio, message.video, message.document):
+        if media is not None and getattr(media, "file_size", None):
+            if media.file_size > 25 * 1024 * 1024:
+                await message.reply_text("🦝 Файл больше 25 МБ.")
+                return
+
+    if not await enforce_ai_rate_limit(update):
+        return
+    try:
+        reserved, used_this_month = await reserve_free_usage(
+            message.chat_id, message.message_id
+        )
+    except Exception:
+        logger.exception("Quota database unavailable")
+        await message.reply_text(
+            "🦝 Учёт бесплатных запросов временно недоступен. "
+            "Обработка приостановлена, чтобы не тратить запросы без контроля."
+        )
+        return
+    if not reserved:
+        await message.reply_text(
+            "🦝 Бесплатный лимит на этот месяц уже использован: 4 из 4 файлов.\n\n"
+            "Новый бесплатный лимит откроется в следующем календарном месяце.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
     status = await message.reply_text(
         f"🦝 Енот уже разбирается… Бесплатно в этом месяце: {used_this_month + 1}/4"
     )
@@ -854,6 +932,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await telegram_file.download_to_drive(custom_path=local_path)
 
             if local_path.stat().st_size > 25 * 1024 * 1024:
+                await release_free_usage(message.chat_id, message.message_id)
                 await status.edit_text(
                     "🦝 Файл больше 25 МБ. Пока отправь, пожалуйста, файл поменьше."
                 )
@@ -892,6 +971,7 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         original = (transcript.text or "").strip()
         if not original:
+            await release_free_usage(message.chat_id, message.message_id)
             await status.edit_text(
                 "🦝 Я всё прослушал, но не смог уверенно распознать речь."
             )
@@ -916,11 +996,6 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.exception("Persistent save failed")
 
-        try:
-            await record_free_usage(message.chat_id, item_id)
-        except Exception:
-            logger.exception("Usage recording failed")
-
         keyboard = result_keyboard(item_id)
 
         body = format_structured_text(structured)
@@ -932,6 +1007,10 @@ async def receive_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception:
         logger.exception("Transcription failed")
+        try:
+            await release_free_usage(message.chat_id, message.message_id)
+        except Exception:
+            logger.exception("Quota release failed")
         await status.edit_text(
             "🦝 Что-то пошло не так при разборе файла. "
             "Попробуй ещё раз чуть позже."
@@ -1198,6 +1277,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    if action in {"notes", "tr"} and not await enforce_ai_rate_limit(update):
+        return
+
     original = item["transcript"]
     item_language_code = item.get("language_code")
 
@@ -1279,6 +1361,8 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if context.user_data.pop("awaiting_library_search", False):
+        if not await enforce_ai_rate_limit(update):
+            return
         search_text = (update.message.text or "").strip()
         rows = await search_transcripts(update.effective_chat.id, search_text)
 
@@ -1330,6 +1414,9 @@ def main():
         .build()
     )
 
+    # Block group/channel processing before all normal handlers.
+    app.add_handler(MessageHandler(~filters.ChatType.PRIVATE, block_non_private), group=-1)
+    app.add_handler(CallbackQueryHandler(block_non_private), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("language", language_command))
