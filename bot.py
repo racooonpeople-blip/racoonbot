@@ -533,7 +533,7 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
     buttons.append([InlineKeyboardButton("💬 Спросить Енота", callback_data="library_ask")])
-    buttons.append(navigation_row("main_menu"))
+    buttons.append([InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="main_menu")])
 
     await update.message.reply_text(
         "📚 <b>Мои записи</b>\n\n"
@@ -1027,7 +1027,7 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
         buttons.append([InlineKeyboardButton("💬 Спросить Енота", callback_data="library_ask")])
-        buttons.append(navigation_row("main_menu"))
+        buttons.append([InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="main_menu")])
 
         await query.message.reply_text(
             "📚 <b>Мои записи</b>\n\n"
