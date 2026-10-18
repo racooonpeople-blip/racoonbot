@@ -532,6 +532,7 @@ async def library_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in rows
     ]
     buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
+    buttons.append([InlineKeyboardButton("💬 Спросить Енота", callback_data="library_ask")])
     buttons.append(navigation_row("main_menu"))
 
     await update.message.reply_text(
@@ -1025,6 +1026,7 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for row in rows
         ]
         buttons.append([InlineKeyboardButton("🔎 Найти в записях", callback_data="library_search")])
+        buttons.append([InlineKeyboardButton("💬 Спросить Енота", callback_data="library_ask")])
         buttons.append(navigation_row("main_menu"))
 
         await query.message.reply_text(
@@ -1035,7 +1037,19 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "library_ask":
+        context.user_data.pop("awaiting_library_search", None)
+        context.user_data["awaiting_library_question"] = True
+        await query.message.reply_text(
+            "💬 <b>Спроси Енота</b>\n\nЗадай вопрос о своих сохранённых записях. "
+            "Я отвечу только по тому, что в них есть.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([navigation_row("library")]),
+        )
+        return
+
     if data == "library_search":
+        context.user_data.pop("awaiting_library_question", None)
         context.user_data["awaiting_library_search"] = True
         await query.message.reply_text(
             "🔎 <b>Что найти?</b>\n\n"
@@ -1113,6 +1127,7 @@ async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data or ""
     context.user_data.pop("awaiting_library_search", None)
+    context.user_data.pop("awaiting_library_question", None)
     context.user_data.pop("awaiting_media_link", None)
 
     if data == "plans":
@@ -1263,6 +1278,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
+async def answer_library_question(chat_id: int, question: str):
+    rows = await search_transcripts(chat_id, question, limit=6)
+    if not rows:
+        return None, []
+    snippets = [
+        f"Record {row['item_id']}: {(row['structured'] or row['original'] or '')[:1800]}"
+        for row in rows
+    ]
+    response = await client.responses.create(
+        model=TEXT_MODEL,
+        input=(
+            "Answer ONLY from the user's saved records. Do not invent details. "
+            "If the records do not answer the question, say so. "
+            "Reply in the same language as the question, concisely. "
+            "Refer to source record IDs for factual claims.\n\n"
+            f"Question: {question}\n\nRecords:\n" + "\n\n".join(snippets)
+        ),
+    )
+    return (response.output_text or "").strip(), rows
+
+
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.pop("awaiting_media_link", False):
         link = (update.message.text or "").strip()
@@ -1276,6 +1312,31 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔗 Ссылку поймал. 🦝\n\nЗагрузка видео по ссылке ещё не подключена, поэтому пока отправь само видео или аудиофайл в чат. Следующим шагом подключим разбор видео прямо по ссылке.",
             reply_markup=main_menu_keyboard(),
         )
+        return
+
+    if context.user_data.pop("awaiting_library_question", False):
+        question = (update.message.text or "").strip()
+        if not question:
+            await update.message.reply_text("🦝 Напиши вопрос о своих записях.", reply_markup=main_menu_keyboard())
+            return
+        status = await update.message.reply_text("🦝 Енот вспоминает…")
+        try:
+            answer, rows = await answer_library_question(update.effective_chat.id, question)
+            buttons = [
+                [InlineKeyboardButton(library_item_title(row), callback_data=f"library_item:{row['item_id']}")]
+                for row in rows
+            ]
+            buttons.append([InlineKeyboardButton("💬 Спросить ещё", callback_data="library_ask")])
+            buttons.append(navigation_row("library"))
+            await status.edit_text(
+                "🦝 <b>Ответ по твоим записям</b>\n\n" +
+                html.escape(answer or "В сохранённых записях ответа не нашлось."),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        except Exception:
+            logger.exception("Library Q&A failed")
+            await status.edit_text("🦝 Не получилось найти ответ. Попробуй ещё раз.", reply_markup=main_menu_keyboard())
         return
 
     if context.user_data.pop("awaiting_library_search", False):
@@ -1337,7 +1398,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             library_callback,
-            pattern=r"^(library|library_search|library_item:.*)$",
+            pattern=r"^(library|library_search|library_ask|library_item:.*)$",
         )
     )
     app.add_handler(
