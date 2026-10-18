@@ -62,6 +62,7 @@ def main_menu_keyboard():
             [InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data="language_menu:main")],
             [InlineKeyboardButton("📚 Мои записи", callback_data="library")],
             [InlineKeyboardButton("Что там по монеткам? 🦝", callback_data="plans")],
+            [InlineKeyboardButton("🌐 Перейти на сайт", url="https://racooontail.com")],
         ]
     )
 
@@ -1091,6 +1092,8 @@ async def library_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton("🎙 Выбрать язык аудио", callback_data=f"language_menu:{item_id}"),
                 ],
+                [InlineKeyboardButton("🌐 Перейти на сайт", url="https://racooontail.com")],
+                [InlineKeyboardButton("🏠 Вернуться в главное меню", callback_data="main_menu")],
                 navigation_row("library"),
             ]
         )
